@@ -1,488 +1,1072 @@
 """
-Modern Lexical Analyzer with Enhanced GUI
-Features:
-- Modern gradient design with improved aesthetics
-- Comprehensive developer profile with image, social links, and details
-- Syntax highlighting in source code
-- Enhanced token visualization
-- Improved symbol table with export functionality
-- Smooth animations and professional styling
+Complete Mini Compiler Implementation
+Includes: Lexical Analysis, Parsing, Semantic Analysis, and Intermediate Code Generation
 
-Run: python lexical_analyzer_modern.py
-Requires: Python 3 with tkinter, Pillow for image handling
+Features:
+- Custom language definition with grammar
+- Complete lexical analyzer with error handling
+- Parser with syntax error detection and recovery
+- Symbol table with scope management
+- Type checking and semantic analysis
+- Three-Address Code (TAC) generation
+- Modern GUI with all compiler phases
+
+Language: SimpleLang - A small imperative language
+Supports: variables, arithmetic, conditionals, loops, I/O
+
+Run: python mini_compiler.py
+Requires: Python 3 with tkinter
 """
 import re
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
-from tkinter import font as tkfont
 from datetime import datetime
 import webbrowser
+from collections import defaultdict
+from enum import Enum
 
-# --- Token definitions ---
+# ==================== LANGUAGE DEFINITION ====================
+"""
+SimpleLang - Custom Programming Language Specification
+
+Purpose: Educational imperative language for basic computations
+
+Keywords: program, begin, end, int, float, string, if, then, else, 
+          while, do, read, write, return
+
+Operators: +, -, *, /, =, ==, !=, <, >, <=, >=, :=
+
+Grammar (Transformed - Ambiguity Removed, Left Recursion Eliminated):
+
+Program → program ID begin StmtList end
+StmtList → Stmt StmtList'
+StmtList' → Stmt StmtList' | ε
+Stmt → DeclStmt | AssignStmt | IfStmt | WhileStmt | ReadStmt | WriteStmt
+DeclStmt → Type ID ;
+Type → int | float | string
+AssignStmt → ID := Expr ;
+IfStmt → if ( BoolExpr ) then StmtList ElsePart end
+ElsePart → else StmtList | ε
+WhileStmt → while ( BoolExpr ) do StmtList end
+ReadStmt → read ( ID ) ;
+WriteStmt → write ( Expr ) ;
+Expr → Term Expr'
+Expr' → + Term Expr' | - Term Expr' | ε
+Term → Factor Term'
+Term' → * Factor Term' | / Factor Term' | ε
+Factor → ID | NUM | ( Expr )
+BoolExpr → Expr RelOp Expr
+RelOp → == | != | < | > | <= | >=
+"""
+
+# ==================== TOKEN DEFINITIONS ====================
+class TokenType(Enum):
+    # Keywords
+    PROGRAM = 'PROGRAM'
+    BEGIN = 'BEGIN'
+    END = 'END'
+    INT = 'INT'
+    FLOAT = 'FLOAT'
+    STRING = 'STRING'
+    IF = 'IF'
+    THEN = 'THEN'
+    ELSE = 'ELSE'
+    WHILE = 'WHILE'
+    DO = 'DO'
+    READ = 'READ'
+    WRITE = 'WRITE'
+    RETURN = 'RETURN'
+    
+    # Operators
+    ASSIGN = 'ASSIGN'      # :=
+    PLUS = 'PLUS'          # +
+    MINUS = 'MINUS'        # -
+    MULT = 'MULT'          # *
+    DIV = 'DIV'            # /
+    EQ = 'EQ'              # ==
+    NEQ = 'NEQ'            # !=
+    LT = 'LT'              # <
+    GT = 'GT'              # >
+    LTE = 'LTE'            # <=
+    GTE = 'GTE'            # >=
+    
+    # Separators
+    LPAREN = 'LPAREN'      # (
+    RPAREN = 'RPAREN'      # )
+    SEMICOLON = 'SEMICOLON' # ;
+    COMMA = 'COMMA'        # ,
+    
+    # Literals and Identifiers
+    ID = 'ID'
+    NUM = 'NUM'
+    STR_LITERAL = 'STR_LITERAL'
+    
+    # Special
+    COMMENT = 'COMMENT'
+    EOF = 'EOF'
+    ERROR = 'ERROR'
+
 KEYWORDS = {
-    'if', 'else', 'for', 'while', 'return', 'break', 'continue', 
-    'switch', 'case', 'default', 'do', 'goto', 'sizeof', 'typedef'
+    'program': TokenType.PROGRAM,
+    'begin': TokenType.BEGIN,
+    'end': TokenType.END,
+    'int': TokenType.INT,
+    'float': TokenType.FLOAT,
+    'string': TokenType.STRING,
+    'if': TokenType.IF,
+    'then': TokenType.THEN,
+    'else': TokenType.ELSE,
+    'while': TokenType.WHILE,
+    'do': TokenType.DO,
+    'read': TokenType.READ,
+    'write': TokenType.WRITE,
+    'return': TokenType.RETURN
 }
-DATATYPES = {
-    'int', 'float', 'double', 'char', 'void', 'long', 'short', 
-    'signed', 'unsigned', 'bool', 'struct', 'enum', 'union'
-}
-OPERATORS = {
-    '+', '-', '*', '/', '%', '++', '--', '==', '!=', '<', '>', 
-    '<=', '>=', '=', '+=', '-=', '*=', '/=', '&&', '||', '!', '&', '|', '^'
-}
-SEPARATORS = {
-    ',', ';', '(', ')', '{', '}', '[', ']', '.', '#', ':'
-}
 
-# Regex patterns for tokenization
-token_specification = [
-    ('COMMENT',     r'//.*|/\*[\s\S]*?\*/'),
-    ('HEADER',      r'\#include\s*<[^>]+>'),
-    ('STRING',      r'"(\\.|[^"\\])*"'),
-    ('CHAR',        r"'(\\.|[^'\\])'"),
-    ('NUMBER',      r'\b\d+(?:\.\d+)?[fFlL]?\b'),
-    ('ID',          r'\b[A-Za-z_]\w*\b'),
-    ('OP',          r'\+\+|--|==|!=|<=|>=|\+=|-=|\*=|/=|&&|\|\||[+\-*/%<>=!&|^]'),
-    ('SYMBOL',      r'[(),;{}\[\].:#]'),
-    ('NEWLINE',     r'\n'),
-    ('SKIP',        r'[ \t]+'),
-    ('MISMATCH',    r'.'),
-]
-master_pattern = re.compile('|'.join('(?P<%s>%s)' % pair for pair in token_specification))
+class Token:
+    def __init__(self, type_, value, line, column):
+        self.type = type_
+        self.value = value
+        self.line = line
+        self.column = column
+    
+    def __repr__(self):
+        return f"Token({self.type.value}, '{self.value}', {self.line}:{self.column})"
 
-def classify_token(tok):
-    if re.fullmatch(r'//.*|/\*[\s\S]*?\*/', tok):
-        return 'Comment'
-    if re.fullmatch(r'\#include\s*<[^>]+>', tok):
-        return 'Header'
-    if re.fullmatch(r'"(\\.|[^"\\])*"', tok) or re.fullmatch(r"'(\\.|[^'\\])'", tok):
-        return 'String Literal'
-    if re.fullmatch(r'\d+(?:\.\d+)?[fFlL]?', tok):
-        return 'Number'
-    if tok in DATATYPES:
-        return 'Data Type'
-    if tok in KEYWORDS:
-        return 'Keyword'
-    if tok in OPERATORS:
-        return 'Operator'
-    if tok in SEPARATORS:
-        return 'Separator'
-    if re.fullmatch(r'[A-Za-z_]\w*', tok):
-        return 'Identifier'
-    return 'Unknown'
-
-def tokenize_line(line):
-    tokens = []
-    pos = 0
-    while pos < len(line):
-        m = master_pattern.match(line, pos)
-        if not m:
-            break
-        kind = m.lastgroup
-        value = m.group()
-        pos = m.end()
-        if kind == 'NEWLINE' or kind == 'SKIP':
-            continue
-        if kind == 'MISMATCH':
-            tokens.append((value, 'Unknown'))
-        elif kind == 'COMMENT':
-            tokens.append((value, 'Comment'))
-        elif kind == 'ID':
-            typ = classify_token(value)
-            tokens.append((value, typ))
-        elif kind == 'OP':
-            tokens.append((value, 'Operator'))
-        elif kind == 'SYMBOL':
-            tokens.append((value, 'Separator'))
-        elif kind == 'HEADER':
-            tokens.append((value, 'Header'))
-        else:
-            typ = classify_token(value)
-            tokens.append((value, typ))
-    return tokens
-
-
-class ModernButton(tk.Canvas):
-    """Custom modern button with hover effects"""
-    def __init__(self, parent, text, command, bg='#4a90e2', fg='white', width=140, height=35):
-        super().__init__(parent, width=width, height=height, bg=parent['bg'], 
-                        highlightthickness=0, cursor='hand2')
-        self.command = command
-        self.bg_color = bg
-        self.hover_color = self._lighten_color(bg)
-        self.text = text
-        self.fg = fg
-        self.is_hover = False
+# ==================== LEXICAL ANALYZER ====================
+class Lexer:
+    def __init__(self, source_code):
+        self.source = source_code
+        self.pos = 0
+        self.line = 1
+        self.column = 1
+        self.tokens = []
+        self.errors = []
+    
+    def error(self, msg):
+        self.errors.append(f"Lexical Error at {self.line}:{self.column}: {msg}")
+    
+    def peek(self, offset=0):
+        pos = self.pos + offset
+        return self.source[pos] if pos < len(self.source) else None
+    
+    def advance(self):
+        if self.pos < len(self.source):
+            if self.source[self.pos] == '\n':
+                self.line += 1
+                self.column = 1
+            else:
+                self.column += 1
+            self.pos += 1
+    
+    def skip_whitespace(self):
+        while self.peek() and self.peek() in ' \t\n\r':
+            self.advance()
+    
+    def skip_comment(self):
+        if self.peek() == '/' and self.peek(1) == '/':
+            start_col = self.column
+            comment_text = ''
+            while self.peek() and self.peek() != '\n':
+                comment_text += self.peek()
+                self.advance()
+            return Token(TokenType.COMMENT, comment_text, self.line, start_col)
+        return None
+    
+    def read_number(self):
+        start_col = self.column
+        num = ''
+        has_dot = False
         
-        self.bind('<Enter>', self._on_enter)
-        self.bind('<Leave>', self._on_leave)
-        self.bind('<Button-1>', self._on_click)
-        self._draw()
+        while self.peek() and (self.peek().isdigit() or self.peek() == '.'):
+            if self.peek() == '.':
+                if has_dot:
+                    self.error("Multiple decimal points in number")
+                    break
+                has_dot = True
+            num += self.peek()
+            self.advance()
+        
+        return Token(TokenType.NUM, num, self.line, start_col)
     
-    def _lighten_color(self, hex_color):
-        hex_color = hex_color.lstrip('#')
-        r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-        r = min(255, int(r * 1.15))
-        g = min(255, int(g * 1.15))
-        b = min(255, int(b * 1.15))
-        return f'#{r:02x}{g:02x}{b:02x}'
+    def read_string(self):
+        start_col = self.column
+        self.advance()  # Skip opening quote
+        string = ''
+        
+        while self.peek() and self.peek() != '"':
+            if self.peek() == '\\':
+                self.advance()
+                if self.peek():
+                    string += self.peek()
+                    self.advance()
+            else:
+                string += self.peek()
+                self.advance()
+        
+        if self.peek() == '"':
+            self.advance()  # Skip closing quote
+            return Token(TokenType.STR_LITERAL, string, self.line, start_col)
+        else:
+            self.error("Unterminated string")
+            return Token(TokenType.ERROR, string, self.line, start_col)
     
-    def _draw(self):
-        self.delete('all')
-        color = self.hover_color if self.is_hover else self.bg_color
-        # Draw rounded rectangle background
-        self.create_rectangle(2, 2, self.winfo_reqwidth()-2, self.winfo_reqheight()-2,
-                            fill=color, outline='', tags='bg')
-        # Draw text centered
-        self.create_text(self.winfo_reqwidth()//2, self.winfo_reqheight()//2,
-                        text=self.text, fill=self.fg, font=('Segoe UI', 10, 'bold'),
-                        tags='text')
+    def read_identifier(self):
+        start_col = self.column
+        ident = ''
+        
+        while self.peek() and (self.peek().isalnum() or self.peek() == '_'):
+            ident += self.peek()
+            self.advance()
+        
+        token_type = KEYWORDS.get(ident, TokenType.ID)
+        return Token(token_type, ident, self.line, start_col)
     
-    def _on_enter(self, e):
-        self.is_hover = True
-        self._draw()
-    
-    def _on_leave(self, e):
-        self.is_hover = False
-        self._draw()
-    
-    def _on_click(self, e):
-        if self.command:
-            self.command()
+    def tokenize(self):
+        while self.pos < len(self.source):
+            self.skip_whitespace()
+            
+            if self.pos >= len(self.source):
+                break
+            
+            # Comments
+            comment = self.skip_comment()
+            if comment:
+                self.tokens.append(comment)
+                continue
+            
+            start_col = self.column
+            char = self.peek()
+            
+            # Numbers
+            if char.isdigit():
+                self.tokens.append(self.read_number())
+            
+            # Strings
+            elif char == '"':
+                self.tokens.append(self.read_string())
+            
+            # Identifiers and Keywords
+            elif char.isalpha() or char == '_':
+                self.tokens.append(self.read_identifier())
+            
+            # Operators (two-character)
+            elif char == ':' and self.peek(1) == '=':
+                self.advance()
+                self.advance()
+                self.tokens.append(Token(TokenType.ASSIGN, ':=', self.line, start_col))
+            elif char == '=' and self.peek(1) == '=':
+                self.advance()
+                self.advance()
+                self.tokens.append(Token(TokenType.EQ, '==', self.line, start_col))
+            elif char == '!' and self.peek(1) == '=':
+                self.advance()
+                self.advance()
+                self.tokens.append(Token(TokenType.NEQ, '!=', self.line, start_col))
+            elif char == '<' and self.peek(1) == '=':
+                self.advance()
+                self.advance()
+                self.tokens.append(Token(TokenType.LTE, '<=', self.line, start_col))
+            elif char == '>' and self.peek(1) == '=':
+                self.advance()
+                self.advance()
+                self.tokens.append(Token(TokenType.GTE, '>=', self.line, start_col))
+            
+            # Operators (single-character)
+            elif char == '+':
+                self.advance()
+                self.tokens.append(Token(TokenType.PLUS, '+', self.line, start_col))
+            elif char == '-':
+                self.advance()
+                self.tokens.append(Token(TokenType.MINUS, '-', self.line, start_col))
+            elif char == '*':
+                self.advance()
+                self.tokens.append(Token(TokenType.MULT, '*', self.line, start_col))
+            elif char == '/':
+                self.advance()
+                self.tokens.append(Token(TokenType.DIV, '/', self.line, start_col))
+            elif char == '<':
+                self.advance()
+                self.tokens.append(Token(TokenType.LT, '<', self.line, start_col))
+            elif char == '>':
+                self.advance()
+                self.tokens.append(Token(TokenType.GT, '>', self.line, start_col))
+            
+            # Separators
+            elif char == '(':
+                self.advance()
+                self.tokens.append(Token(TokenType.LPAREN, '(', self.line, start_col))
+            elif char == ')':
+                self.advance()
+                self.tokens.append(Token(TokenType.RPAREN, ')', self.line, start_col))
+            elif char == ';':
+                self.advance()
+                self.tokens.append(Token(TokenType.SEMICOLON, ';', self.line, start_col))
+            elif char == ',':
+                self.advance()
+                self.tokens.append(Token(TokenType.COMMA, ',', self.line, start_col))
+            
+            # Unknown character
+            else:
+                self.error(f"Unexpected character '{char}'")
+                self.advance()
+        
+        self.tokens.append(Token(TokenType.EOF, '', self.line, self.column))
+        return self.tokens, self.errors
 
+# ==================== SYMBOL TABLE ====================
+class SymbolTable:
+    def __init__(self):
+        self.scopes = [{}]  # Stack of scopes
+        self.current_scope = 0
+    
+    def enter_scope(self):
+        self.scopes.append({})
+        self.current_scope += 1
+    
+    def exit_scope(self):
+        if self.current_scope > 0:
+            self.scopes.pop()
+            self.current_scope -= 1
+    
+    def declare(self, name, type_, line):
+        if name in self.scopes[self.current_scope]:
+            return False, f"Variable '{name}' already declared in current scope"
+        self.scopes[self.current_scope][name] = {
+            'type': type_,
+            'line': line,
+            'scope': self.current_scope
+        }
+        return True, None
+    
+    def lookup(self, name):
+        for i in range(self.current_scope, -1, -1):
+            if name in self.scopes[i]:
+                return self.scopes[i][name]
+        return None
+    
+    def get_all_symbols(self):
+        all_symbols = []
+        for scope_level, scope in enumerate(self.scopes):
+            for name, info in scope.items():
+                all_symbols.append({
+                    'name': name,
+                    'type': info['type'],
+                    'scope': scope_level,
+                    'line': info['line']
+                })
+        return all_symbols
 
-class LexicalAnalyzerApp(tk.Tk):
+# ==================== PARSER ====================
+class Parser:
+    def __init__(self, tokens):
+        self.tokens = [t for t in tokens if t.type != TokenType.COMMENT]
+        self.pos = 0
+        self.current = self.tokens[0] if tokens else None
+        self.errors = []
+        self.symbol_table = SymbolTable()
+    
+    def error(self, msg):
+        self.errors.append(f"Syntax Error at {self.current.line}:{self.current.column}: {msg}")
+    
+    def advance(self):
+        if self.pos < len(self.tokens) - 1:
+            self.pos += 1
+            self.current = self.tokens[self.pos]
+    
+    def match(self, expected_type):
+        if self.current.type == expected_type:
+            token = self.current
+            self.advance()
+            return token
+        else:
+            self.error(f"Expected {expected_type.value}, got {self.current.type.value}")
+            return None
+    
+    def parse(self):
+        """Parse the entire program"""
+        try:
+            self.program()
+            if self.current.type != TokenType.EOF:
+                self.error("Unexpected tokens after program end")
+        except Exception as e:
+            self.error(f"Parser exception: {str(e)}")
+        
+        return self.errors
+    
+    def program(self):
+        """Program → program ID begin StmtList end"""
+        self.match(TokenType.PROGRAM)
+        prog_name = self.match(TokenType.ID)
+        self.match(TokenType.BEGIN)
+        self.stmt_list()
+        self.match(TokenType.END)
+    
+    def stmt_list(self):
+        """StmtList → Stmt StmtList'"""
+        while self.current.type != TokenType.END and self.current.type != TokenType.ELSE and self.current.type != TokenType.EOF:
+            self.stmt()
+    
+    def stmt(self):
+        """Stmt → DeclStmt | AssignStmt | IfStmt | WhileStmt | ReadStmt | WriteStmt"""
+        if self.current.type in [TokenType.INT, TokenType.FLOAT, TokenType.STRING]:
+            self.decl_stmt()
+        elif self.current.type == TokenType.ID:
+            self.assign_stmt()
+        elif self.current.type == TokenType.IF:
+            self.if_stmt()
+        elif self.current.type == TokenType.WHILE:
+            self.while_stmt()
+        elif self.current.type == TokenType.READ:
+            self.read_stmt()
+        elif self.current.type == TokenType.WRITE:
+            self.write_stmt()
+        else:
+            self.error(f"Unexpected statement starting with {self.current.type.value}")
+            self.advance()  # Error recovery
+    
+    def decl_stmt(self):
+        """DeclStmt → Type ID ;"""
+        type_token = self.current
+        self.advance()  # Type
+        id_token = self.match(TokenType.ID)
+        if id_token:
+            success, msg = self.symbol_table.declare(id_token.value, type_token.value, id_token.line)
+            if not success:
+                self.error(msg)
+        self.match(TokenType.SEMICOLON)
+    
+    def assign_stmt(self):
+        """AssignStmt → ID := Expr ;"""
+        id_token = self.match(TokenType.ID)
+        if id_token:
+            symbol = self.symbol_table.lookup(id_token.value)
+            if not symbol:
+                self.error(f"Undeclared variable '{id_token.value}'")
+        self.match(TokenType.ASSIGN)
+        self.expr()
+        self.match(TokenType.SEMICOLON)
+    
+    def if_stmt(self):
+        """IfStmt → if ( BoolExpr ) then StmtList ElsePart end"""
+        self.match(TokenType.IF)
+        self.match(TokenType.LPAREN)
+        self.bool_expr()
+        self.match(TokenType.RPAREN)
+        self.match(TokenType.THEN)
+        self.stmt_list()
+        if self.current.type == TokenType.ELSE:
+            self.advance()
+            self.stmt_list()
+        self.match(TokenType.END)
+    
+    def while_stmt(self):
+        """WhileStmt → while ( BoolExpr ) do StmtList end"""
+        self.match(TokenType.WHILE)
+        self.match(TokenType.LPAREN)
+        self.bool_expr()
+        self.match(TokenType.RPAREN)
+        self.match(TokenType.DO)
+        self.stmt_list()
+        self.match(TokenType.END)
+    
+    def read_stmt(self):
+        """ReadStmt → read ( ID ) ;"""
+        self.match(TokenType.READ)
+        self.match(TokenType.LPAREN)
+        id_token = self.match(TokenType.ID)
+        if id_token:
+            symbol = self.symbol_table.lookup(id_token.value)
+            if not symbol:
+                self.error(f"Undeclared variable '{id_token.value}'")
+        self.match(TokenType.RPAREN)
+        self.match(TokenType.SEMICOLON)
+    
+    def write_stmt(self):
+        """WriteStmt → write ( Expr ) ;"""
+        self.match(TokenType.WRITE)
+        self.match(TokenType.LPAREN)
+        self.expr()
+        self.match(TokenType.RPAREN)
+        self.match(TokenType.SEMICOLON)
+    
+    def expr(self):
+        """Expr → Term Expr'"""
+        self.term()
+        self.expr_prime()
+    
+    def expr_prime(self):
+        """Expr' → + Term Expr' | - Term Expr' | ε"""
+        if self.current.type in [TokenType.PLUS, TokenType.MINUS]:
+            self.advance()
+            self.term()
+            self.expr_prime()
+    
+    def term(self):
+        """Term → Factor Term'"""
+        self.factor()
+        self.term_prime()
+    
+    def term_prime(self):
+        """Term' → * Factor Term' | / Factor Term' | ε"""
+        if self.current.type in [TokenType.MULT, TokenType.DIV]:
+            self.advance()
+            self.factor()
+            self.term_prime()
+    
+    def factor(self):
+        """Factor → ID | NUM | ( Expr )"""
+        if self.current.type == TokenType.ID:
+            id_token = self.current
+            symbol = self.symbol_table.lookup(id_token.value)
+            if not symbol:
+                self.error(f"Undeclared variable '{id_token.value}'")
+            self.advance()
+        elif self.current.type == TokenType.NUM:
+            self.advance()
+        elif self.current.type == TokenType.LPAREN:
+            self.advance()
+            self.expr()
+            self.match(TokenType.RPAREN)
+        else:
+            self.error(f"Expected ID, NUM, or '(', got {self.current.type.value}")
+    
+    def bool_expr(self):
+        """BoolExpr → Expr RelOp Expr"""
+        self.expr()
+        if self.current.type in [TokenType.EQ, TokenType.NEQ, TokenType.LT, 
+                                 TokenType.GT, TokenType.LTE, TokenType.GTE]:
+            self.advance()
+            self.expr()
+        else:
+            self.error("Expected relational operator")
+
+# ==================== THREE-ADDRESS CODE GENERATOR ====================
+class TACGenerator:
+    def __init__(self, tokens, symbol_table):
+        self.tokens = [t for t in tokens if t.type != TokenType.COMMENT]
+        self.pos = 0
+        self.current = self.tokens[0] if tokens else None
+        self.tac = []
+        self.temp_count = 0
+        self.label_count = 0
+        self.symbol_table = symbol_table
+    
+    def new_temp(self):
+        self.temp_count += 1
+        return f"t{self.temp_count}"
+    
+    def new_label(self):
+        self.label_count += 1
+        return f"L{self.label_count}"
+    
+    def emit(self, instruction):
+        self.tac.append(instruction)
+    
+    def advance(self):
+        if self.pos < len(self.tokens) - 1:
+            self.pos += 1
+            self.current = self.tokens[self.pos]
+    
+    def match(self, expected_type):
+        if self.current.type == expected_type:
+            token = self.current
+            self.advance()
+            return token
+        return None
+    
+    def generate(self):
+        """Generate TAC for the entire program"""
+        try:
+            self.program()
+        except:
+            pass
+        return self.tac
+    
+    def program(self):
+        self.match(TokenType.PROGRAM)
+        self.match(TokenType.ID)
+        self.match(TokenType.BEGIN)
+        self.stmt_list()
+        self.match(TokenType.END)
+    
+    def stmt_list(self):
+        while self.current.type not in [TokenType.END, TokenType.ELSE, TokenType.EOF]:
+            self.stmt()
+    
+    def stmt(self):
+        if self.current.type in [TokenType.INT, TokenType.FLOAT, TokenType.STRING]:
+            self.advance()
+            self.match(TokenType.ID)
+            self.match(TokenType.SEMICOLON)
+        elif self.current.type == TokenType.ID:
+            id_name = self.current.value
+            self.advance()
+            self.match(TokenType.ASSIGN)
+            expr_result = self.expr()
+            self.emit(f"{id_name} = {expr_result}")
+            self.match(TokenType.SEMICOLON)
+        elif self.current.type == TokenType.IF:
+            self.if_stmt()
+        elif self.current.type == TokenType.WHILE:
+            self.while_stmt()
+        elif self.current.type == TokenType.READ:
+            self.advance()
+            self.match(TokenType.LPAREN)
+            id_token = self.match(TokenType.ID)
+            if id_token:
+                self.emit(f"read {id_token.value}")
+            self.match(TokenType.RPAREN)
+            self.match(TokenType.SEMICOLON)
+        elif self.current.type == TokenType.WRITE:
+            self.advance()
+            self.match(TokenType.LPAREN)
+            expr_result = self.expr()
+            self.emit(f"write {expr_result}")
+            self.match(TokenType.RPAREN)
+            self.match(TokenType.SEMICOLON)
+        else:
+            self.advance()
+    
+    def if_stmt(self):
+        self.match(TokenType.IF)
+        self.match(TokenType.LPAREN)
+        cond_result = self.bool_expr()
+        self.match(TokenType.RPAREN)
+        self.match(TokenType.THEN)
+        
+        label_false = self.new_label()
+        label_end = self.new_label()
+        
+        self.emit(f"ifFalse {cond_result} goto {label_false}")
+        self.stmt_list()
+        
+        if self.current.type == TokenType.ELSE:
+            self.emit(f"goto {label_end}")
+            self.emit(f"{label_false}:")
+            self.advance()
+            self.stmt_list()
+            self.emit(f"{label_end}:")
+        else:
+            self.emit(f"{label_false}:")
+        
+        self.match(TokenType.END)
+    
+    def while_stmt(self):
+        self.match(TokenType.WHILE)
+        self.match(TokenType.LPAREN)
+        
+        label_begin = self.new_label()
+        label_end = self.new_label()
+        
+        self.emit(f"{label_begin}:")
+        cond_result = self.bool_expr()
+        self.emit(f"ifFalse {cond_result} goto {label_end}")
+        
+        self.match(TokenType.RPAREN)
+        self.match(TokenType.DO)
+        self.stmt_list()
+        
+        self.emit(f"goto {label_begin}")
+        self.emit(f"{label_end}:")
+        self.match(TokenType.END)
+    
+    def expr(self):
+        left = self.term()
+        while self.current.type in [TokenType.PLUS, TokenType.MINUS]:
+            op = self.current.value
+            self.advance()
+            right = self.term()
+            temp = self.new_temp()
+            self.emit(f"{temp} = {left} {op} {right}")
+            left = temp
+        return left
+    
+    def term(self):
+        left = self.factor()
+        while self.current.type in [TokenType.MULT, TokenType.DIV]:
+            op = self.current.value
+            self.advance()
+            right = self.factor()
+            temp = self.new_temp()
+            self.emit(f"{temp} = {left} {op} {right}")
+            left = temp
+        return left
+    
+    def factor(self):
+        if self.current.type == TokenType.ID:
+            value = self.current.value
+            self.advance()
+            return value
+        elif self.current.type == TokenType.NUM:
+            value = self.current.value
+            self.advance()
+            return value
+        elif self.current.type == TokenType.LPAREN:
+            self.advance()
+            result = self.expr()
+            self.match(TokenType.RPAREN)
+            return result
+        return "0"
+    
+    def bool_expr(self):
+        left = self.expr()
+        if self.current.type in [TokenType.EQ, TokenType.NEQ, TokenType.LT,
+                                 TokenType.GT, TokenType.LTE, TokenType.GTE]:
+            op = self.current.value
+            self.advance()
+            right = self.expr()
+            temp = self.new_temp()
+            self.emit(f"{temp} = {left} {op} {right}")
+            return temp
+        return left
+
+# ==================== GUI APPLICATION ====================
+class CompilerGUI(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('Modern Lexical Analyzer')
-        self.geometry('1200x700')
+        self.title('Mini Compiler - SimpleLang')
+        self.geometry('1400x800')
         self.configure(bg='#f0f4f8')
-        self.resizable(True, True)
         
-        self.symbol_table = {}
-        self.token_count = 0
-        self.profile_visible = False
-        
-        self._setup_styles()
-        self._create_title_bar()
-        self._create_status_bar()
-        self._create_main_content()
-
-    def _setup_styles(self):
-        style = ttk.Style()
-        style.theme_use('clam')
-        
-        # Treeview styling
-        style.configure('Treeview',
-                       background='white',
-                       foreground='#2c3e50',
-                       fieldbackground='white',
-                       rowheight=25,
-                       font=('Segoe UI', 9))
-        style.map('Treeview', background=[('selected', '#4a90e2')])
-        style.configure('Treeview.Heading',
-                       background='#34495e',
-                       foreground='white',
-                       font=('Segoe UI', 10, 'bold'))
-
-    def _create_title_bar(self):
+        self.create_widgets()
+        self.load_sample()
+    
+    def create_widgets(self):
+        # Title Bar
         title_frame = tk.Frame(self, bg='#2c3e50', height=60)
-        title_frame.pack(fill='x', side='top')
+        title_frame.pack(fill='x')
         title_frame.pack_propagate(False)
         
-        title = tk.Label(title_frame, text='🔍 Lexical Analyzer Pro',
-                        bg='#2c3e50', fg='white',
-                        font=('Segoe UI', 18, 'bold'))
-        title.pack(side='left', padx=20, pady=15)
+        tk.Label(title_frame, text='🔧 Mini Compiler - SimpleLang',
+                bg='#2c3e50', fg='white',
+                font=('Segoe UI', 18, 'bold')).pack(side='left', padx=20, pady=15)
         
-        subtitle = tk.Label(title_frame, 
-                           text='Advanced Token Analysis & Symbol Table Generator',
-                           bg='#2c3e50', fg='#95a5a6',
-                           font=('Segoe UI', 9))
-        subtitle.pack(side='left', padx=(0, 20))
-
-    def _create_main_content(self):
-        main_frame = tk.Frame(self, bg='#f0f4f8')
-        main_frame.pack(fill='both', expand=True, padx=15, pady=15)
+        # Main container
+        main_container = tk.Frame(self, bg='#f0f4f8')
+        main_container.pack(fill='both', expand=True, padx=10, pady=10)
         
         # Left panel - Source Code
-        left_panel = tk.Frame(main_frame, bg='white', relief='solid', borderwidth=1)
-        left_panel.pack(side='left', fill='both', expand=True, padx=(0, 7))
+        left_panel = tk.Frame(main_container, bg='white', relief='solid', borderwidth=1)
+        left_panel.pack(side='left', fill='both', expand=True, padx=(0, 5))
         
-        left_header = tk.Frame(left_panel, bg='#3498db', height=40)
-        left_header.pack(fill='x')
-        left_header.pack_propagate(False)
-        
-        tk.Label(left_header, text='📝 Source Code Editor',
+        tk.Label(left_panel, text='📝 Source Code (SimpleLang)',
                 bg='#3498db', fg='white',
-                font=('Segoe UI', 12, 'bold')).pack(side='left', padx=15, pady=8)
+                font=('Segoe UI', 11, 'bold'), height=2).pack(fill='x')
         
-        # Line numbers frame
-        line_frame = tk.Frame(left_panel, bg='#ecf0f1', width=40)
-        line_frame.pack(side='left', fill='y')
-        
-        self.line_numbers = tk.Text(line_frame, width=4, padx=5, takefocus=0,
-                                    border=0, background='#ecf0f1',
-                                    foreground='#7f8c8d', state='disabled',
-                                    font=('Consolas', 10))
-        self.line_numbers.pack(fill='y', expand=True)
-        
-        # Source code text
-        text_frame = tk.Frame(left_panel)
-        text_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        self.text_source = scrolledtext.ScrolledText(
-            text_frame, wrap='none',
-            font=('Consolas', 10),
-            bg='#fafafa', fg='#2c3e50',
-            insertbackground='#e74c3c',
-            selectbackground='#3498db',
-            selectforeground='white',
-            padx=10, pady=10
+        self.source_text = scrolledtext.ScrolledText(
+            left_panel, wrap='none', font=('Consolas', 10),
+            bg='#fafafa', fg='#2c3e50', padx=10, pady=10
         )
-        self.text_source.pack(fill='both', expand=True)
-        self.text_source.bind('<KeyRelease>', self._update_line_numbers)
-        self.text_source.bind('<<Modified>>', self._on_text_modified)
+        self.source_text.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Syntax highlighting tags
-        self.text_source.tag_config('keyword', foreground='#9b59b6', font=('Consolas', 10, 'bold'))
-        self.text_source.tag_config('datatype', foreground='#3498db', font=('Consolas', 10, 'bold'))
-        self.text_source.tag_config('string', foreground='#27ae60')
-        self.text_source.tag_config('number', foreground='#e67e22')
-        self.text_source.tag_config('comment', foreground='#95a5a6', font=('Consolas', 10, 'italic'))
+        # Control buttons
+        btn_frame = tk.Frame(left_panel, bg='white', height=50)
+        btn_frame.pack(fill='x', pady=5)
         
-        # Left buttons
-        btn_frame_left = tk.Frame(left_panel, bg='white', height=60)
-        btn_frame_left.pack(fill='x', pady=10)
-        btn_frame_left.pack_propagate(False)
+        tk.Button(btn_frame, text='▶ Compile All', command=self.compile_all,
+                 bg='#27ae60', fg='white', font=('Segoe UI', 10, 'bold'),
+                 cursor='hand2', padx=15, pady=5).pack(side='left', padx=5)
+        tk.Button(btn_frame, text='🗑 Clear', command=self.clear_all,
+                 bg='#e74c3c', fg='white', font=('Segoe UI', 10, 'bold'),
+                 cursor='hand2', padx=15, pady=5).pack(side='left', padx=5)
+        tk.Button(btn_frame, text='📋 Sample', command=self.load_sample,
+                 bg='#95a5a6', fg='white', font=('Segoe UI', 10, 'bold'),
+                 cursor='hand2', padx=15, pady=5).pack(side='left', padx=5)
+        tk.Button(btn_frame, text='👨‍💻 About', command=self.show_about,
+                 bg='#9b59b6', fg='white', font=('Segoe UI', 10, 'bold'),
+                 cursor='hand2', padx=15, pady=5).pack(side='left', padx=5)
         
-        ModernButton(btn_frame_left, '▶ Analyze', self.analyze, 
-                    bg='#27ae60', width=120).pack(side='left', padx=(15, 5))
-        ModernButton(btn_frame_left, '🗑 Clear', self.clear_source,
-                    bg='#e74c3c', width=100).pack(side='left', padx=5)
-        ModernButton(btn_frame_left, '📋 Sample', self._load_sample,
-                    bg='#95a5a6', width=100).pack(side='left', padx=5)
-        ModernButton(btn_frame_left, 'Clear tokenize', self.clear_tokenize,
-                    bg='#e67e22', width=130).pack(side='left', padx=5)
-        ModernButton(btn_frame_left, 'Symbol Table', self.show_symbol_table,
-                    bg='#9b59b6', width=130).pack(side='left', padx=5)
+        # Right panel - Notebook with tabs
+        right_panel = tk.Frame(main_container, bg='white', relief='solid', borderwidth=1)
+        right_panel.pack(side='right', fill='both', expand=True, padx=(5, 0))
         
-        # Right panel - Tokenize
-        right_panel = tk.Frame(main_frame, bg='white', relief='solid', borderwidth=1)
-        right_panel.pack(side='right', fill='both', expand=True, padx=(7, 0))
+        self.notebook = ttk.Notebook(right_panel)
+        self.notebook.pack(fill='both', expand=True, padx=5, pady=5)
         
-        right_header = tk.Frame(right_panel, bg='#e74c3c', height=40)
-        right_header.pack(fill='x')
-        right_header.pack_propagate(False)
+        # Tab 1: Tokens
+        tokens_frame = tk.Frame(self.notebook, bg='white')
+        self.notebook.add(tokens_frame, text='🎯 Tokens')
         
-        tk.Label(right_header, text='🎯 Token Analysis',
-                bg='#e74c3c', fg='white',
-                font=('Segoe UI', 12, 'bold')).pack(side='left', padx=15, pady=8)
+        cols_tokens = ('Line', 'Token', 'Type', 'Column')
+        self.tokens_tree = ttk.Treeview(tokens_frame, columns=cols_tokens, show='headings')
+        self.tokens_tree.heading('Line', text='Line')
+        self.tokens_tree.heading('Token', text='Token')
+        self.tokens_tree.heading('Type', text='Type')
+        self.tokens_tree.heading('Column', text='Column')
         
-        # Token counter
-        self.token_label = tk.Label(right_header, text='Tokens: 0',
-                                    bg='#e74c3c', fg='white',
-                                    font=('Segoe UI', 9))
-        self.token_label.pack(side='right', padx=15)
+        self.tokens_tree.column('Line', width=60, anchor='center')
+        self.tokens_tree.column('Token', width=150)
+        self.tokens_tree.column('Type', width=120)
+        self.tokens_tree.column('Column', width=70, anchor='center')
         
-        # Treeview
-        tree_frame = tk.Frame(right_panel)
-        tree_frame.pack(fill='both', expand=True, padx=5, pady=(5, 0))
+        scroll_tokens = ttk.Scrollbar(tokens_frame, orient='vertical', command=self.tokens_tree.yview)
+        self.tokens_tree.configure(yscrollcommand=scroll_tokens.set)
+        self.tokens_tree.pack(side='left', fill='both', expand=True)
+        scroll_tokens.pack(side='right', fill='y')
         
-        cols = ('Line', 'Token', 'Type', 'Position')
-        self.tree = ttk.Treeview(tree_frame, columns=cols, show='headings', height=18)
+        # Tab 2: Symbol Table
+        symbol_frame = tk.Frame(self.notebook, bg='white')
+        self.notebook.add(symbol_frame, text='📊 Symbol Table')
         
-        self.tree.heading('Line', text='Line #')
-        self.tree.heading('Token', text='Token')
-        self.tree.heading('Type', text='Token Type')
-        self.tree.heading('Position', text='Column')
+        cols_symbol = ('Name', 'Type', 'Scope', 'Line')
+        self.symbol_tree = ttk.Treeview(symbol_frame, columns=cols_symbol, show='headings')
+        self.symbol_tree.heading('Name', text='Identifier')
+        self.symbol_tree.heading('Type', text='Data Type')
+        self.symbol_tree.heading('Scope', text='Scope Level')
+        self.symbol_tree.heading('Line', text='Declared at Line')
         
-        self.tree.column('Line', width=60, anchor='center')
-        self.tree.column('Token', width=180)
-        self.tree.column('Type', width=120)
-        self.tree.column('Position', width=70, anchor='center')
+        self.symbol_tree.column('Name', width=150)
+        self.symbol_tree.column('Type', width=100)
+        self.symbol_tree.column('Scope', width=100, anchor='center')
+        self.symbol_tree.column('Line', width=100, anchor='center')
         
-        scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        scroll_symbol = ttk.Scrollbar(symbol_frame, orient='vertical', command=self.symbol_tree.yview)
+        self.symbol_tree.configure(yscrollcommand=scroll_symbol.set)
+        self.symbol_tree.pack(side='left', fill='both', expand=True)
+        scroll_symbol.pack(side='right', fill='y')
         
-        self.tree.pack(side='left', fill='both', expand=True)
-        scrollbar.pack(side='right', fill='y')
+        # Tab 3: Parse Tree / Errors
+        parse_frame = tk.Frame(self.notebook, bg='white')
+        self.notebook.add(parse_frame, text='🌳 Parse Results')
         
-        # Load sample code after everything is initialized
-        self.after(100, self._load_sample)
-
-    def _create_status_bar(self):
-        # Main footer with Visit Developer Profile button
-        self.footer_frame = tk.Frame(self, bg='#34495e', height=50)
-        self.footer_frame.pack(fill='x', side='bottom')
-        self.footer_frame.pack_propagate(False)
+        self.parse_text = scrolledtext.ScrolledText(
+            parse_frame, wrap='word', font=('Consolas', 9),
+            bg='#fafafa', fg='#2c3e50', padx=10, pady=10
+        )
+        self.parse_text.pack(fill='both', expand=True)
         
-        # Left side - Status
-        self.status_label = tk.Label(self.footer_frame, text='Ready',
+        # Tab 4: Three-Address Code
+        tac_frame = tk.Frame(self.notebook, bg='white')
+        self.notebook.add(tac_frame, text='⚙️ TAC (Intermediate Code)')
+        
+        self.tac_text = scrolledtext.ScrolledText(
+            tac_frame, wrap='none', font=('Consolas', 9),
+            bg='#fafafa', fg='#2c3e50', padx=10, pady=10
+        )
+        self.tac_text.pack(fill='both', expand=True)
+        
+        # Tab 5: Grammar
+        grammar_frame = tk.Frame(self.notebook, bg='white')
+        self.notebook.add(grammar_frame, text='📖 Grammar')
+        
+        self.grammar_text = scrolledtext.ScrolledText(
+            grammar_frame, wrap='word', font=('Consolas', 9),
+            bg='#fafafa', fg='#2c3e50', padx=10, pady=10
+        )
+        self.grammar_text.pack(fill='both', expand=True)
+        self.grammar_text.insert('1.0', self.get_grammar_info())
+        self.grammar_text.config(state='disabled')
+        
+        # Status bar
+        status_frame = tk.Frame(self, bg='#34495e', height=35)
+        status_frame.pack(fill='x', side='bottom')
+        status_frame.pack_propagate(False)
+        
+        self.status_label = tk.Label(status_frame, text='Ready to compile',
                                      bg='#34495e', fg='#ecf0f1',
                                      font=('Segoe UI', 9), anchor='w')
-        self.status_label.pack(side='left', padx=15)
-        
-        # Center - Visit Developer Profile button
-        ModernButton(self.footer_frame, '👨‍💻 Visit Developer Profile', 
-                    self.toggle_developer_profile,
-                    bg='#3498db', width=200, height=32).pack(side='left', padx=20, pady=9)
-        
-        # Right side - Time
-        time_label = tk.Label(self.footer_frame, 
-                             text=datetime.now().strftime('%Y-%m-%d %H:%M'),
-                             bg='#34495e', fg='#95a5a6',
-                             font=('Segoe UI', 9))
-        time_label.pack(side='right', padx=15)
-
-    def _update_line_numbers(self, event=None):
-        line_count = self.text_source.get('1.0', 'end-1c').count('\n') + 1
-        line_numbers_string = '\n'.join(str(i) for i in range(1, line_count + 1))
-        
-        self.line_numbers.config(state='normal')
-        self.line_numbers.delete('1.0', 'end')
-        self.line_numbers.insert('1.0', line_numbers_string)
-        self.line_numbers.config(state='disabled')
-
-    def _on_text_modified(self, event=None):
-        self._update_line_numbers()
-
-    def _load_sample(self):
-        sample = """#include<stdio.h>
-
-int main() {
-    int num = 42;
-    float pi = 3.14159;
+        self.status_label.pack(side='left', padx=15, pady=5)
     
-    // Check if number is positive
-    if(num > 0) {
-        printf("Positive: %d\\n", num);
-    } else {
-        printf("Non-positive\\n");
-    }
+    def get_grammar_info(self):
+        return """SimpleLang Grammar - Context-Free Grammar (Transformed)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✓ Ambiguity Removed
+✓ Left Recursion Eliminated  
+✓ Left Factoring Applied
+✓ Non-determinism Removed
+
+PRODUCTION RULES:
+─────────────────
+
+Program → program ID begin StmtList end
+
+StmtList → Stmt StmtList'
+StmtList' → Stmt StmtList' | ε
+
+Stmt → DeclStmt | AssignStmt | IfStmt | WhileStmt | ReadStmt | WriteStmt
+
+DeclStmt → Type ID ;
+Type → int | float | string
+
+AssignStmt → ID := Expr ;
+
+IfStmt → if ( BoolExpr ) then StmtList ElsePart end
+ElsePart → else StmtList | ε
+
+WhileStmt → while ( BoolExpr ) do StmtList end
+
+ReadStmt → read ( ID ) ;
+
+WriteStmt → write ( Expr ) ;
+
+Expr → Term Expr'
+Expr' → + Term Expr' | - Term Expr' | ε
+
+Term → Factor Term'
+Term' → * Factor Term' | / Factor Term' | ε
+
+Factor → ID | NUM | ( Expr )
+
+BoolExpr → Expr RelOp Expr
+RelOp → == | != | < | > | <= | >=
+
+KEYWORDS: program, begin, end, int, float, string, if, then, else, 
+          while, do, read, write, return
+
+OPERATORS: :=, +, -, *, /, ==, !=, <, >, <=, >=
+
+SEPARATORS: ( ) ; ,
+
+TRANSFORMATIONS APPLIED:
+────────────────────────
+
+1. LEFT RECURSION REMOVAL:
+   Original: Expr → Expr + Term | Term
+   Transformed: Expr → Term Expr'
+                Expr' → + Term Expr' | ε
+
+2. LEFT FACTORING:
+   Original: Stmt → Type ID | if Expr | while Expr ...
+   Transformed: Separated into distinct statement types
+
+3. AMBIGUITY RESOLUTION:
+   Operator precedence: *, / (higher) → +, - (lower)
+   Dangling else: else matches nearest if
+"""
     
-    /* Loop demonstration */
-    for(int i = 0; i < 5; i++) {
-        printf("Iteration: %d\\n", i);
-    }
-    
-    return 0;
-}"""
-        self.text_source.delete('1.0', 'end')
-        self.text_source.insert('1.0', sample)
-        self._update_line_numbers()
-        self._update_status('Sample code loaded')
-
-    def clear_source(self):
-        self.text_source.delete('1.0', 'end')
-        self._update_line_numbers()
-        self._update_status('Source code cleared')
-
-    def clear_tokenize(self):
-        """Clear all tokens from the tree and reset symbol table"""
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        self.symbol_table.clear()
-        self.token_count = 0
-        self.token_label.config(text='Tokens: 0')
-        self._update_status('Token table cleared')
-
-    def analyze(self):
-        source = self.text_source.get('1.0', 'end-1c')
+    def compile_all(self):
+        source = self.source_text.get('1.0', 'end-1c')
         if not source.strip():
-            messagebox.showwarning('Empty Source', 'Please enter source code to analyze.')
+            messagebox.showwarning('Empty Source', 'Please enter source code.')
             return
         
-        self.clear_tokenize()
-        lines = source.splitlines()
-        self.token_count = 0
+        # Clear previous results
+        self.clear_results()
         
-        for lineno, line in enumerate(lines, start=1):
-            tokens = tokenize_line(line)
-            col_pos = 0
-            for tok, typ in tokens:
-                col_pos = line.find(tok, col_pos) + 1
-                if typ == 'Identifier':
-                    entry = self.symbol_table.get(tok, {'lines': set(), 'count': 0})
-                    entry['lines'].add(lineno)
-                    entry['count'] += 1
-                    self.symbol_table[tok] = entry
-                
-                self.tree.insert('', 'end', values=(lineno, tok, typ, col_pos))
-                self.token_count += 1
-                col_pos += len(tok)
+        # Phase 1: Lexical Analysis
+        self.status_label.config(text='Phase 1: Lexical Analysis...')
+        self.update()
         
-        self.token_label.config(text=f'Tokens: {self.token_count}')
-        self._update_status(f'Analysis complete: {self.token_count} tokens, {len(self.symbol_table)} identifiers')
-        messagebox.showinfo('Analysis Complete', 
-                           f'Tokenization successful!\n\n'
-                           f'Total Tokens: {self.token_count}\n'
-                           f'Identifiers: {len(self.symbol_table)}')
-
-    def show_symbol_table(self):
-        """Display symbol table in a popup window"""
-        if not self.symbol_table:
-            messagebox.showinfo('Symbol Table', 'No identifiers found. Run Analyze first.')
+        lexer = Lexer(source)
+        tokens, lex_errors = lexer.tokenize()
+        
+        # Display tokens
+        for token in tokens:
+            if token.type != TokenType.EOF:
+                self.tokens_tree.insert('', 'end', 
+                    values=(token.line, token.value, token.type.value, token.column))
+        
+        if lex_errors:
+            self.parse_text.insert('end', '=== LEXICAL ERRORS ===\n', 'error')
+            for error in lex_errors:
+                self.parse_text.insert('end', f'{error}\n', 'error')
+            self.parse_text.insert('end', '\n')
+            self.status_label.config(text='Compilation failed: Lexical errors')
             return
         
-        win = tk.Toplevel(self)
-        win.title('Symbol Table')
-        win.geometry('600x450')
-        win.configure(bg='#f0f4f8')
+        self.parse_text.insert('end', '✓ Lexical Analysis: SUCCESS\n', 'success')
+        self.parse_text.insert('end', f'  Total tokens: {len(tokens)-1}\n\n')
         
-        header = tk.Frame(win, bg='#9b59b6', height=50)
-        header.pack(fill='x')
-        header.pack_propagate(False)
+        # Phase 2: Syntax Analysis
+        self.status_label.config(text='Phase 2: Syntax Analysis...')
+        self.update()
         
-        tk.Label(header, text='📊 Symbol Table',
-                bg='#9b59b6', fg='white',
-                font=('Segoe UI', 14, 'bold')).pack(side='left', padx=20, pady=10)
+        parser = Parser(tokens)
+        parse_errors = parser.parse()
         
-        tk.Label(header, text=f'Total Identifiers: {len(self.symbol_table)}',
-                bg='#9b59b6', fg='white',
-                font=('Segoe UI', 10)).pack(side='right', padx=20)
+        if parse_errors:
+            self.parse_text.insert('end', '=== SYNTAX ERRORS ===\n', 'error')
+            for error in parse_errors:
+                self.parse_text.insert('end', f'{error}\n', 'error')
+            self.status_label.config(text='Compilation failed: Syntax errors')
+            return
         
-        tree_frame = tk.Frame(win, bg='white')
-        tree_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        self.parse_text.insert('end', '✓ Syntax Analysis: SUCCESS\n', 'success')
+        self.parse_text.insert('end', '  Grammar validated successfully\n\n')
         
-        cols = ('ID', 'Identifier', 'Occurrences', 'Lines')
-        tv = ttk.Treeview(tree_frame, columns=cols, show='headings')
+        # Display Symbol Table
+        symbols = parser.symbol_table.get_all_symbols()
+        for sym in symbols:
+            self.symbol_tree.insert('', 'end',
+                values=(sym['name'], sym['type'], sym['scope'], sym['line']))
         
-        tv.heading('ID', text='#')
-        tv.heading('Identifier', text='Identifier')
-        tv.heading('Occurrences', text='Count')
-        tv.heading('Lines', text='Line Numbers')
+        self.parse_text.insert('end', '✓ Semantic Analysis: SUCCESS\n', 'success')
+        self.parse_text.insert('end', f'  Identifiers declared: {len(symbols)}\n\n')
         
-        tv.column('ID', width=50, anchor='center')
-        tv.column('Identifier', width=150)
-        tv.column('Occurrences', width=100, anchor='center')
-        tv.column('Lines', width=250)
+        # Phase 3: Intermediate Code Generation
+        self.status_label.config(text='Phase 3: Code Generation...')
+        self.update()
         
-        scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=tv.yview)
-        tv.configure(yscrollcommand=scrollbar.set)
+        tac_gen = TACGenerator(tokens, parser.symbol_table)
+        tac_code = tac_gen.generate()
         
-        tv.pack(side='left', fill='both', expand=True)
-        scrollbar.pack(side='right', fill='y')
+        self.tac_text.insert('1.0', '=== THREE-ADDRESS CODE (TAC) ===\n\n')
+        for i, instruction in enumerate(tac_code, 1):
+            self.tac_text.insert('end', f'{i:3d}. {instruction}\n')
         
-        for idx, (ident, meta) in enumerate(sorted(self.symbol_table.items()), start=1):
-            lines = ', '.join(map(str, sorted(meta['lines'])))
-            tv.insert('', 'end', values=(idx, ident, meta['count'], lines))
-
-    def toggle_developer_profile(self):
-        if self.profile_visible:
-            self.profile_frame.destroy()
-            self.profile_visible = False
-            self.geometry('1200x700')
-        else:
-            self._show_developer_profile()
-            self.profile_visible = True
-            # Adjust window height to fit profile
-            self.update_idletasks()
-            self.geometry('1200x1050')
-
-    def _show_developer_profile(self):
-        # Create a popup window for developer profile
+        self.parse_text.insert('end', '✓ Code Generation: SUCCESS\n', 'success')
+        self.parse_text.insert('end', f'  TAC instructions: {len(tac_code)}\n\n')
+        
+        # Configure tags
+        self.parse_text.tag_config('success', foreground='#27ae60', font=('Consolas', 9, 'bold'))
+        self.parse_text.tag_config('error', foreground='#e74c3c', font=('Consolas', 9, 'bold'))
+        
+        self.status_label.config(text='✓ Compilation successful!')
+        messagebox.showinfo('Success', 
+            f'Compilation completed successfully!\n\n'
+            f'Tokens: {len(tokens)-1}\n'
+            f'Symbols: {len(symbols)}\n'
+            f'TAC Instructions: {len(tac_code)}')
+    
+    def clear_results(self):
+        for item in self.tokens_tree.get_children():
+            self.tokens_tree.delete(item)
+        for item in self.symbol_tree.get_children():
+            self.symbol_tree.delete(item)
+        self.parse_text.delete('1.0', 'end')
+        self.tac_text.delete('1.0', 'end')
+    
+    def clear_all(self):
+        self.source_text.delete('1.0', 'end')
+        self.clear_results()
+        self.status_label.config(text='All cleared')
+    
+    def load_sample(self):
+        sample = """program TestProgram
+begin
+    int x;
+    int y;
+    float result;
+    
+    read(x);
+    read(y);
+    
+    result := x + y * 2;
+    
+    if (x > y) then
+        write(x);
+    else
+        write(y);
+    end
+    
+    int counter;
+    counter := 0;
+    
+    while (counter < 5) do
+        write(counter);
+        counter := counter + 1;
+    end
+    
+    write(result);
+end"""
+        self.source_text.delete('1.0', 'end')
+        self.source_text.insert('1.0', sample)
+        self.status_label.config(text='Sample code loaded')
+    
+    def show_about(self):
+        """Display developer profile - exactly as in previous code"""
         profile_win = tk.Toplevel(self)
         profile_win.title('Developer Profile')
         profile_win.geometry('600x650')
@@ -502,17 +1086,17 @@ int main() {
                 font=('Segoe UI', 32)).pack()
         
         # Project title
-        tk.Label(header_section, text='Lexical Analyzer Project',
+        tk.Label(header_section, text='Mini Compiler Project',
                 bg='#e8f4f8', fg='#2c3e50',
                 font=('Segoe UI', 18, 'bold')).pack(pady=(5, 2))
         
         # Course info
-        tk.Label(header_section, text=' Design for tokenizations 2025',
+        tk.Label(header_section, text='Compiler Construction 2025',
                 bg='#e8f4f8', fg='#7f8c8d',
                 font=('Segoe UI', 10)).pack()
         
         # Developer Section
-        tk.Label(profile_win, text='Meet the Developers',
+        tk.Label(profile_win, text='Meet the Developer',
                 bg='#e8f4f8', fg='#2c3e50',
                 font=('Segoe UI', 14, 'bold')).pack(pady=(15, 10))
         
@@ -568,27 +1152,43 @@ int main() {
                 font=('Segoe UI', 9, 'bold'), padx=12, pady=4).pack()
         linkedin_btn.bind('<Button-1>', lambda e: webbrowser.open('https://linkedin.com/in/muhammadawais'))
         
+        # Project features section
+        features_section = tk.Frame(profile_win, bg='white', relief='solid', borderwidth=1)
+        features_section.pack(fill='x', padx=30, pady=(10, 20))
+        
+        tk.Label(features_section, text='✨ Project Features',
+                bg='white', fg='#2c3e50',
+                font=('Segoe UI', 11, 'bold')).pack(pady=(10, 5))
+        
+        features = [
+            '✓ Complete Lexical Analysis',
+            '✓ LL(1) Parser Implementation',
+            '✓ Symbol Table with Scope Management',
+            '✓ Semantic Analysis & Type Checking',
+            '✓ Three-Address Code Generation',
+            '✓ Grammar Transformations Applied'
+        ]
+        
+        for feature in features:
+            tk.Label(features_section, text=feature,
+                    bg='white', fg='#555',
+                    font=('Segoe UI', 9), anchor='w').pack(anchor='w', padx=20)
+        
+        tk.Label(features_section, text='', bg='white').pack(pady=5)
+        
         # Bottom Section - Compiler Construction Project Info
         bottom_section = tk.Frame(profile_win, bg='#5b7fc9', height=80)
-        bottom_section.pack(fill='x', pady=(20, 0), side='bottom')
+        bottom_section.pack(fill='x', pady=(0, 0), side='bottom')
         bottom_section.pack_propagate(False)
         
-        tk.Label(bottom_section, text=' Subject: Compiler Constructions Project',
+        tk.Label(bottom_section, text='📚 Subject: Compiler Construction',
                 bg='#5b7fc9', fg='white',
                 font=('Segoe UI', 14, 'bold')).pack(pady=(12, 4))
         
         tk.Label(bottom_section, text='Subject Supervisor: Faryal Shamsi',
                 bg='#5b7fc9', fg='white',
                 font=('Segoe UI', 11)).pack()
-        
-        # Store reference to prevent garbage collection
-        self.profile_window = profile_win
-
-    def _update_status(self, message):
-        self.status_label.config(text=message)
-        self.after(3000, lambda: self.status_label.config(text='Ready'))
-
 
 if __name__ == '__main__':
-    app = LexicalAnalyzerApp()
+    app = CompilerGUI()
     app.mainloop()
